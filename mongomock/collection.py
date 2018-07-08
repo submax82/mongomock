@@ -867,9 +867,18 @@ class Collection(object):
                             full_key_path_found = False
                             break
                         subdocument_copy = subdocument_copy[key_part]
-                    if not full_key_path_found or key_parts[-1] not in subdocument_copy:
+                    if not full_key_path_found:
                         continue
-                    del subdocument_copy[key_parts[-1]]
+                    if isinstance(subdocument_copy, dict) and key_parts[-1] not in subdocument_copy:
+                        continue
+                    if isinstance(subdocument_copy, list) and not [sd for sd in subdocument_copy if key_parts[-1] in sd]:
+                        continue
+                    if isinstance(subdocument_copy, list):
+                        for sd in subdocument_copy:
+                            if sd.get(key_parts[-1]):
+                                del sd[key_parts[-1]]
+                    else:
+                        del subdocument_copy[key_parts[-1]]
 
             # set the _id value if we requested it, otherwise remove it
             if id_value == 0:
@@ -1313,7 +1322,8 @@ class Collection(object):
             '$geoNear',
             '$lookup',
             '$out',
-            '$indexStats']
+            '$indexStats',
+            '$count']
         group_operators = [
             '$addToSet',
             '$first',
@@ -1671,6 +1681,13 @@ class Collection(object):
                     out_collection = out_collection[v:]
                 elif k == '$limit':
                     out_collection = out_collection[:v]
+                elif k == '$count':
+                    out_collection = [{v: len(out_collection)}]
+                elif k == '$lookup':
+                    to_join_collection = self.database.get_collection(v['from'])
+                    for oc in out_collection:
+                        docs = list(to_join_collection.find({v['foreignField']: oc[v['localField']]}))
+                        oc[v['as']] = docs if docs else None
                 elif k == '$unwind':
                     if not isinstance(v, helpers.basestring) or v[0] != '$':
                         raise ValueError(
@@ -1691,15 +1708,10 @@ class Collection(object):
                                 unwound_collection[-1], v[1:], field_item)
                     out_collection = unwound_collection
                 elif k == '$project':
-                    filter_list = ['_id']
                     for field, value in iteritems(v):
-                        if field == '_id' and not value:
-                            filter_list.remove('_id')
-                        elif value:
-                            filter_list.append(field)
+                        if value and not (isinstance(value, int) or isinstance(value, bool)):
                             out_collection = _extend_collection(out_collection, field, value)
-                    out_collection = [{k: v for (k, v) in x.items() if k in filter_list}
-                                      for x in out_collection]
+                    out_collection = [self._copy_only_fields(x, v, dict) for x in out_collection]
                 elif k == '$out':
                     # TODO(MetrodataTeam): should leave the origin collection unchanged
                     collection = self.database.get_collection(v)
